@@ -1,0 +1,307 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Pixi - Your Personal Assistant</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css" />
+  <script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</head>
+<body class="bg-gray-900 text-white flex flex-col items-center justify-center min-h-screen p-4">
+  <div class="text-center w-full max-w-xl">
+    <h1 class="text-4xl font-bold mb-4">Pixi - Your Personal Assistant</h1>
+    <p id="status" class="text-lg mb-4">Click the button and speak to Pixi!</p>
+    <button id="start-btn" class="bg-blue-500 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded">
+      Start Pixi
+    </button>
+    <p class="mt-2 text-gray-300">Voice: <span id="voice-name"></span></p>
+    <p id="response" class="mt-4 text-gray-300 whitespace-pre-line"></p>
+    
+    <div id="music-player" class="mt-4 hidden">
+      <iframe id="youtube-frame" width="100%" height="200" src="" frameborder="0" allow="autoplay; encrypted-media" allowfullscreen></iframe>
+    </div>
+    
+    <div id="map" class="mt-4 w-full h-64 hidden"></div>
+    <canvas id="math-graph" class="mt-4 hidden" width="400" height="200"></canvas>
+  </div>
+
+  <script>
+    const startBtn = document.getElementById('start-btn');
+    const status = document.getElementById('status');
+    const response = document.getElementById('response');
+    const voiceNameEl = document.getElementById('voice-name');
+    const musicPlayer = document.getElementById('music-player');
+    const youtubeFrame = document.getElementById('youtube-frame');
+    const mapDiv = document.getElementById('map');
+    const graphCanvas = document.getElementById('math-graph');
+
+    const recognition = new (window.SpeechRecognition || window.webkitSpeechRecognition)();
+    recognition.lang = 'en-US';
+    recognition.interimResults = false;
+    recognition.continuous = false;
+
+    const synth = window.speechSynthesis;
+    const grokApiKey = 'xaiqNQvGkWnHo4YBuFdYfBwiJWNQVcc6081zVaXegckiRndNi1ZWwfixFO5DVrY1Yjd1FwxyoZ3W7PP8Pt4';
+
+    let isListening = false;
+    let voices = [];
+    let femaleVoice = null;
+    let chart = null;
+
+    // Load conversation history from localStorage
+    let storedHistory = localStorage.getItem('pixiHistory');
+    let conversationHistory = storedHistory ? JSON.parse(storedHistory) : [
+      { role: "system", content: "You are Pixi, a friendly female personal assistant who knows everything and loves helping users with facts, advice, math, and casual conversation." }
+    ];
+
+    function saveHistory() {
+      localStorage.setItem('pixiHistory', JSON.stringify(conversationHistory));
+    }
+
+    function loadVoices() {
+      voices = synth.getVoices();
+      femaleVoice = voices.find(v => v.name === "Zira") || voices.find(v => v.name === "Samantha") || voices.find(v => v.name.toLowerCase().includes("female")) || voices[0];
+      voiceNameEl.textContent = femaleVoice.name;
+    }
+    synth.onvoiceschanged = loadVoices;
+
+    function speak(text) {
+      const utterance = new SpeechSynthesisUtterance(text);
+      utterance.lang = 'en-US';
+      utterance.voice = femaleVoice;
+      utterance.pitch = 1.2;
+      utterance.rate = 1;
+      utterance.onend = () => { if(isListening) recognition.start(); };
+      synth.speak(utterance);
+    }
+
+    function greetUser() {
+      const hour = new Date().getHours();
+      let greeting = hour < 12 ? 'Good morning' : hour < 18 ? 'Good afternoon' : 'Good evening';
+      return `${greeting}, I am Pixi, your personal assistant. How can I assist you today?`;
+    }
+
+    function getWeatherDescription(code) {
+      const codes = {0:'Clear sky',1:'Mainly clear',2:'Partly cloudy',3:'Overcast',45:'Fog',48:'Depositing rime fog',51:'Light drizzle',53:'Moderate drizzle',55:'Dense drizzle',61:'Slight rain',63:'Moderate rain',65:'Heavy rain',71:'Slight snow fall',73:'Moderate snow fall',75:'Heavy snow fall',80:'Slight rain showers',81:'Moderate rain showers',82:'Violent rain showers',95:'Thunderstorm',99:'Thunderstorm with heavy hail'};
+      return codes[code] || 'Unknown weather condition';
+    }
+
+    async function getWeather(location) {
+      try {
+        const geoUrl = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(location)}&format=json&limit=1`;
+        const geoResponse = await fetch(geoUrl);
+        const geoData = await geoResponse.json();
+        if (!geoData.length) return 'Sorry, I could not find that location.';
+        const lat = geoData[0].lat;
+        const lon = geoData[0].lon;
+        const weatherUrl = `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&current=temperature_2m,weather_code`;
+        const weatherResponse = await fetch(weatherUrl);
+        const weatherData = await weatherResponse.json();
+        const temp = weatherData.current.temperature_2m;
+        const code = weatherData.current.weather_code;
+        const description = getWeatherDescription(code);
+        return `The current temperature in ${location} is ${temp}°C, with ${description.toLowerCase()}.`;
+      } catch {
+        return 'Sorry, there was an error fetching the weather.';
+      }
+    }
+
+    async function askGrok(question) {
+      try {
+        conversationHistory.push({ role: "user", content: question });
+        const res = await fetch('https://api.x.ai/v1/chat/completions', {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${grokApiKey}`,
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({ model: 'grok-beta', messages: conversationHistory })
+        });
+        const data = await res.json();
+        const answer = data.choices[0].message.content;
+        conversationHistory.push({ role: "assistant", content: answer });
+        saveHistory();
+        return answer;
+      } catch {
+        return 'Sorry, there was an error connecting to the AI service.';
+      }
+    }
+
+    function openApp(appName) {
+      const apps = {
+        youtube: "https://youtube.com", google: "https://google.com", gmail: "https://mail.google.com",
+        calculator: "https://www.google.com/search?q=calculator", notepad: "https://anotepad.com/",
+        netflix: "https://www.netflix.com", roblox: "https://www.roblox.com", minecraft: "https://www.minecraft.net",
+        block: "https://blockly.games/", mail: "https://mail.google.com"
+      };
+      if (apps[appName]) { window.open(apps[appName], "_blank"); return `Opening ${appName}...`; }
+      else { return `Sorry, I don’t know how to open ${appName}.`; }
+    }
+
+    function playMusic(songUrl) {
+      youtubeFrame.src = songUrl + "?autoplay=1&rel=0";
+      musicPlayer.classList.remove('hidden');
+    }
+
+    function lookupItem(item) {
+      const searchUrl = `https://www.google.com/search?q=${encodeURIComponent(item)}`;
+      window.open(searchUrl, "_blank");
+      return `I searched Google for "${item}". Check the new tab for results.`;
+    }
+
+    async function getPrice(item) {
+      try {
+        const apiUrl = `https://dummyjson.com/products/search?q=${encodeURIComponent(item)}`;
+        const res = await fetch(apiUrl);
+        const data = await res.json();
+        if (data && data.products && data.products.length > 0) {
+          const price = data.products[0].price;
+          return `The approximate price of ${item} is $${price}.`;
+        } else return lookupItem(item);
+      } catch { return lookupItem(item); }
+    }
+
+    async function getNearbyPlaces(placeType = "restaurant") {
+      try {
+        const geoRes = await fetch("https://ipapi.co/json/");
+        const geoData = await geoRes.json();
+        const lat = geoData.latitude; const lon = geoData.longitude;
+        const placesUrl = `https://nominatim.openstreetmap.org/search.php?q=${placeType}&format=json&limit=5&viewbox=${lon-0.05},${lat-0.05},${lon+0.05},${lat+0.05}`;
+        const res = await fetch(placesUrl);
+        const data = await res.json();
+        if (!data.length) return `Sorry, no nearby ${placeType} found.`;
+        let output = `Here are some nearby ${placeType}s:\n`;
+        data.forEach((place, idx) => { output += `${idx+1}. ${place.display_name}\n`; });
+        return output;
+      } catch { return "Sorry, I couldn't find nearby places."; }
+    }
+
+    async function showNearbyMap(placeType = "restaurant") {
+      mapDiv.classList.remove("hidden");
+      const geoRes = await fetch("https://ipapi.co/json/");
+      const geoData = await geoRes.json();
+      const lat = geoData.latitude; const lon = geoData.longitude;
+      mapDiv.innerHTML = "";
+      const map = L.map('map').setView([lat, lon], 14);
+      L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19 }).addTo(map);
+      const placesUrl = `https://nominatim.openstreetmap.org/search.php?q=${placeType}&format=json&limit=10&viewbox=${lon-0.05},${lat-0.05},${lon+0.05},${lat+0.05}`;
+      const res = await fetch(placesUrl);
+      const data = await res.json();
+      data.forEach(place => { L.marker([place.lat, place.lon]).addTo(map).bindPopup(place.display_name); });
+      return `Showing nearby ${placeType}s on the map.`;
+    }
+
+    function explainMath(expr) {
+      let explanation = `Calculating: ${expr}\n`;
+      try {
+        const result = Function(`'use strict'; return (${expr})`)();
+        explanation += `The final result is ${result}.`;
+        return explanation;
+      } catch { return `Sorry, I couldn't calculate that expression.`; }
+    }
+
+    function plotFunction(expr) {
+      graphCanvas.classList.remove('hidden');
+      const xValues = [];
+      const yValues = [];
+      for (let x = -10; x <= 10; x += 0.5) {
+        try { const y = Function('x', `return ${expr}`)(x); xValues.push(x); yValues.push(y); } 
+        catch { return 'Invalid function expression.'; }
+      }
+      if (chart) chart.destroy();
+      chart = new Chart(graphCanvas, {
+        type: 'line',
+        data: { labels: xValues, datasets: [{ label: `y = ${expr}`, data: yValues, borderColor: 'rgb(99,102,241)', borderWidth: 2, fill: false, pointRadius: 0 }] },
+        options: { responsive: true, scales: { x: { title: { display: true, text: 'x' } }, y: { title: { display: true, text: 'y' } } } }
+      });
+      return `Graphing y = ${expr} from x = -10 to 10.`;
+    }
+
+    async function processCommand(command) {
+      command = command.toLowerCase();
+      let responseText = '';
+
+      if (command.startsWith("calculate ") || command.startsWith("what is ") || command.startsWith("solve ")) {
+        let expr = command.replace(/^(calculate |what is |solve )/, '').trim();
+        responseText = explainMath(expr);
+      }
+      else if (command.startsWith('graph ') || command.startsWith('plot ')) {
+        const expr = command.replace(/graph |plot /, '').trim();
+        responseText = plotFunction(expr);
+      }
+      else if (command.includes('hello') || command.includes('hi')) { responseText = 'Hello! How can I help you today?'; }
+      else if (command.includes('time')) { responseText = `The current time is ${new Date().toLocaleTimeString()}.`; }
+      else if (command.includes('name')) { responseText = 'I am Pixi, your personal assistant!'; }
+      else if (command.includes('date')) { responseText = `Today’s date is ${new Date().toLocaleDateString()}.`; }
+      else if (command.includes('stop pixi')) { responseText = 'Goodbye! See you next time.'; isListening = false; }
+      else if (command.includes('weather')) {
+        const match = command.match(/weather\s*(in|for)?\s*(.*)/i);
+        const location = match ? match[2].trim() : '';
+        responseText = location ? await getWeather(location) : 'Please specify a location for the weather.';
+      }
+      else if (command.startsWith('open ')) { const appName = command.replace('open', '').trim(); responseText = openApp(appName); }
+      else if (command.includes('play music')) {
+        const musicLinks = [
+          "https://www.youtube.com/embed/4NRXx6U8ABQ","https://www.youtube.com/embed/G6t0J5A5noo",
+          "https://www.youtube.com/embed/CjJ-R-3zj5A","https://www.youtube.com/embed/H5v3kku4y6Q",
+          "https://www.youtube.com/embed/1ZYbU82GVz4"
+        ];
+        playMusic(musicLinks[Math.floor(Math.random() * musicLinks.length)]);
+        responseText = `Playing a popular song for you!`;
+      }
+      else if (command.startsWith('play ')) {
+        const songName = command.replace('play', '').trim();
+        const youtubeSearchUrl = `https://www.youtube.com/results?search_query=${encodeURIComponent(songName)}`;
+        window.open(youtubeSearchUrl, "_blank");
+        responseText = `Searching for "${songName}" on YouTube.`;
+      }
+      else if (command.startsWith('price of ') || command.startsWith('how much is ')) {
+        const item = command.replace('price of ', '').replace('how much is ', '').trim();
+        responseText = await getPrice(item);
+      }
+      else if (command.startsWith('look up ')) { const item = command.replace('look up ', '').trim(); responseText = lookupItem(item); }
+      else if (command.startsWith("nearby ")) { const type = command.replace("nearby ", "").trim(); responseText = await getNearbyPlaces(type); }
+      else if (command.startsWith("show map of ")) { const type = command.replace("show map of ", "").trim(); responseText = await showNearbyMap(type); }
+      else { responseText = await askGrok(command); }
+
+      response.textContent = responseText;
+      speak(responseText);
+    }
+
+    startBtn.addEventListener('click', () => {
+      isListening = true;
+      recognition.start();
+      status.textContent = 'Listening... Speak now!';
+      startBtn.textContent = 'Listening...';
+      startBtn.classList.remove('bg-blue-500', 'hover:bg-blue-700');
+      startBtn.classList.add('bg-gray-500');
+    });
+
+    recognition.onresult = (event) => {
+      const transcript = event.results[0][0].transcript;
+      status.textContent = `You said: ${transcript}`;
+      conversationHistory.push({ role: "user", content: transcript });
+      saveHistory();
+      processCommand(transcript);
+    };
+
+    recognition.onend = () => {
+      if (isListening) { recognition.start(); status.textContent = 'Listening... Speak now!'; }
+      else { status.textContent = 'Click the button and speak to Pixi!'; startBtn.textContent = 'Start Pixi'; startBtn.classList.remove('bg-gray-500'); startBtn.classList.add('bg-blue-500', 'hover:bg-blue-700'); }
+    };
+
+    recognition.onerror = (event) => { status.textContent = 'Error occurred in recognition: ' + event.error; if (isListening) recognition.start(); };
+
+    window.onload = () => {
+      loadVoices();
+      const greeting = greetUser();
+      response.textContent = greeting;
+      speak(greeting);
+      conversationHistory.push({ role: "assistant", content: greeting });
+      saveHistory();
+    };
+  </script>
+</body>
+</html>
